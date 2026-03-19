@@ -1,13 +1,13 @@
 {
-  "name": "tsbean-driver-postgres",
-  "version": "3.0.2",
-  "description": "PostgreSQL driver for TSBean-ORM.",
+  "name": "tsbean-driver-postgis",
+  "version": "1.0.0",
+  "description": "PostGIS driver for TSBean-ORM. Extends the PostgreSQL driver with automatic geometry serialization (GeoJSON ↔ WKB) and spatial filter support.",
   "main": "dist/index.js",
   "typings": "dist/index.d.ts",
-  "homepage": "https://github.com/AgustinSRG/tsbean-driver-postgres",
+  "homepage": "https://github.com/Sn4pe/tsbean-driver-postgis",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AgustinSRG/tsbean-driver-postgres.git"
+    "url": "git+https://github.com/Sn4pe/tsbean-driver-postgis.git"
   },
   "scripts": {
     "prebuild": "npm run lint",
@@ -21,10 +21,17 @@
     "dist/"
   ],
   "author": {
-    "name": "Agustin San Roman",
-    "email": "agustinsanromanguzman@gmail.com",
-    "url": "https://github.com/AgustinSRG"
+    "name": "sn4pe",
+    "email": "hi@sn4pe.com",
+    "url": "https://github.com/Sn4pe"
   },
+  "contributors": [
+    {
+      "name": "Agustin San Roman",
+      "email": "agustinsanromanguzman@gmail.com",
+      "url": "https://github.com/AgustinSRG"
+    }
+  ],
   "engines": {
     "node": ">= 16.0.0"
   },
