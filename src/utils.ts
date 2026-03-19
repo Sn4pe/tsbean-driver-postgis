@@ -2,6 +2,8 @@
 
 "use strict";
 
+import { isGeoJSON } from "./geometry";
+
 /**
  * Converts to snake case
  * @param camel String in camel case
@@ -55,24 +57,52 @@ export function replaceLikeWildcards(str): string {
 }
 
 /**
- * Translates value into something MySQL DBMs can understand
- * @param val The original value
- * @returns Parsed value
+ * Result of converting a value to SQL-compatible format.
+ * When the value is a GeoJSON geometry, the placeholder must use
+ * ST_GeomFromGeoJSON instead of a plain parameter.
  */
-export function toSQLCompatibleValue(val: any) {
+export interface SQLValue {
+    /** The serialized value to pass as a query parameter */
+    value: any;
+    /** The placeholder to use in the SQL query ("?" or "ST_GeomFromGeoJSON(?)::geometry") */
+    placeholder: string;
+}
+
+/**
+ * Translates value into something PostgreSQL can understand.
+ * For GeoJSON objects, returns a special placeholder that wraps
+ * the parameter with ST_GeomFromGeoJSON.
+ *
+ * @param val The original value
+ * @returns SQLValue with the serialized value and appropriate placeholder
+ */
+export function toSQLCompatibleValue(val: any): SQLValue {
     if (val === null || val === undefined) {
-        return null;
+        return { value: null, placeholder: "?" };
+    } else if (isGeoJSON(val)) {
+        return { value: JSON.stringify(val), placeholder: "ST_GeomFromGeoJSON(?)::geometry" };
     } else if (typeof val === "number" || typeof val === "string" || val instanceof Date) {
-        return val;
+        return { value: val, placeholder: "?" };
     } else if (typeof val === "object") {
-        return JSON.stringify(val);
+        return { value: JSON.stringify(val), placeholder: "?" };
     } else if (typeof val === "bigint") {
-        return val.toString(10);
+        return { value: val.toString(10), placeholder: "?" };
     } else if (typeof val === "boolean") {
-        return val ? 1 : 0;
+        return { value: val ? 1 : 0, placeholder: "?" };
     } else {
-        return null;
+        return { value: null, placeholder: "?" };
     }
+}
+
+/**
+ * Simple value conversion (without placeholder info).
+ * Used by the filtering module.
+ *
+ * @param val The original value
+ * @returns The serialized value
+ */
+export function toSQLValue(val: any): any {
+    return toSQLCompatibleValue(val).value;
 }
 
 /**
