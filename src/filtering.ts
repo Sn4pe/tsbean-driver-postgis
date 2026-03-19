@@ -3,14 +3,14 @@
 "use strict";
 
 import { GenericFilter } from "tsbean-orm";
-import { replaceLikeWildcards, reverseRegexp } from "./utils";
+import { replaceLikeWildcards, reverseRegexp, toSQLValue } from "./utils";
 
 /**
  * Parses filter and creates a SQL expression for It
  * @param filter Generic filter
  * @returns The sql query and the list of values
  */
-export function filterToSQL(filter: GenericFilter, idConverter: (id: string) => string): { query: string; values: any[] } {
+export function filterToSQL(filter: GenericFilter | any, idConverter: (id: string) => string): { query: string; values: any[] } {
     let query = "";
     const values = [];
 
@@ -154,6 +154,26 @@ export function filterToSQL(filter: GenericFilter, idConverter: (id: string) => 
     case "lte":
         query += "\"" + idConverter(filter.key) + "\" <= ?";
         values.push(filter.value);
+        break;
+
+    // --- PostGIS spatial filters ---
+
+    case "st_intersects":
+        query += "ST_Intersects(\"" + idConverter(filter.key) + "\", ST_GeomFromGeoJSON(?)::geometry)";
+        values.push(toSQLValue(filter.geometry));
+        break;
+    case "st_contains":
+        query += "ST_Contains(\"" + idConverter(filter.key) + "\", ST_GeomFromGeoJSON(?)::geometry)";
+        values.push(toSQLValue(filter.geometry));
+        break;
+    case "st_within":
+        query += "ST_Within(\"" + idConverter(filter.key) + "\", ST_GeomFromGeoJSON(?)::geometry)";
+        values.push(toSQLValue(filter.geometry));
+        break;
+    case "st_dwithin":
+        query += "ST_DWithin(\"" + idConverter(filter.key) + "\", ST_GeomFromGeoJSON(?)::geometry, ?)";
+        values.push(toSQLValue(filter.geometry));
+        values.push(filter.distance);
         break;
     }
 
