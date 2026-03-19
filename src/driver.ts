@@ -1,12 +1,14 @@
-// Driver implementation
+// PostGIS Driver — forked from tsbean-driver-postgres
+// Adds automatic GeoJSON ↔ WKB conversion and spatial filter support
 
 "use strict";
 
-import { Pool } from "pg";
+import { Pool, types } from "pg";
 import Cursor from "pg-cursor";
 import { DataSourceDriver, DataSource, GenericKeyValue, GenericRow, SortDirection, GenericFilter, QueryExtraOptions } from "tsbean-orm";
 import { filterToSQL } from "./filtering";
 import { normalizeSQLResults, toCamelCase, toPostgresTemplate, toSnakeCase, toSQLCompatibleValue } from "./utils";
+import { wkbToGeoJSON } from "./geometry";
 
 const CURSOR_READ_AMOUNT = 100;
 
@@ -17,9 +19,9 @@ interface NameConversion {
 }
 
 /**
- * PostgreSQL source configuration
+ * PostGIS source configuration
  */
-export interface PostgreSQLSourceConfiguration {
+export interface PostGISSourceConfiguration {
     host: string;
     port?: number;
     user?: string;
@@ -31,26 +33,35 @@ export interface PostgreSQLSourceConfiguration {
 }
 
 /**
- * Driver class
+ * PostGIS driver for tsbean-orm.
+ *
+ * Drop-in replacement for tsbean-driver-postgres that adds:
+ * - Automatic WKB → GeoJSON conversion on reads (via pg type parser)
+ * - Automatic GeoJSON → ST_GeomFromGeoJSON() wrapping on writes
+ * - Spatial filter support (ST_Intersects, ST_Contains, ST_Within, ST_DWithin)
  */
-export class PostgreSQLDriver implements DataSourceDriver {
+export class PostGISDriver implements DataSourceDriver {
 
     /**
      * Creates a data source for this driver
-     * @param config 
+     * @param config
      * @returns The data source
      */
-    public static createDataSource(config: PostgreSQLSourceConfiguration): DataSource {
-        const driver = new PostgreSQLDriver(config);
-        return new DataSource("tsbean.driver.postgres", driver);
+    public static createDataSource(config: PostGISSourceConfiguration): DataSource {
+        const driver = new PostGISDriver(config);
+        return new DataSource("tsbean.driver.postgis", driver);
     }
 
     public pool: Pool;
     public idConversion: NameConversion;
 
-    // private connection: Connection;
+    private geometryOidRegistered: boolean;
+    private geometryOidPromise: Promise<void> | null;
 
-    constructor(config: PostgreSQLSourceConfiguration) {
+    constructor(config: PostGISSourceConfiguration) {
+        this.geometryOidRegistered = false;
+        this.geometryOidPromise = null;
+
         this.pool = new Pool({
             /* Single connection for sequential workers, multiple connections for server workers */
             max: config.connections || 4,
@@ -78,6 +89,34 @@ export class PostgreSQLDriver implements DataSourceDriver {
     }
 
     /**
+     * Ensures PostGIS geometry type parsers are registered.
+     * Called lazily before the first query. Uses a shared promise
+     * to avoid duplicate registration and connection deadlocks.
+     */
+    private async ensureGeometryParsers(): Promise<void> {
+        if (this.geometryOidRegistered) {
+            return;
+        }
+
+        if (!this.geometryOidPromise) {
+            this.geometryOidPromise = this.pool.query(
+                "SELECT oid, typname FROM pg_type WHERE typname IN ('geometry', 'geography')",
+            ).then((result) => {
+                for (const row of result.rows) {
+                    const oid = parseInt(row.oid, 10);
+                    types.setTypeParser(oid, (val: string) => wkbToGeoJSON(val));
+                }
+                this.geometryOidRegistered = true;
+            }).catch(() => {
+                // PostGIS might not be installed — geometry columns will return raw WKB
+                this.geometryOidRegistered = true;
+            });
+        }
+
+        await this.geometryOidPromise;
+    }
+
+    /**
      * Runs a custom SQL query
      * @param sentence The SQL sentence
      * @param values The values to replace
@@ -100,7 +139,8 @@ export class PostgreSQLDriver implements DataSourceDriver {
      * @param keyName Name of the key
      * @param keyValue Value of the key
      */
-    findByKey(table: string, keyName: string, keyValue: any): Promise<GenericRow> {
+    async findByKey(table: string, keyName: string, keyValue: any): Promise<GenericRow> {
+        await this.ensureGeometryParsers();
         const sentence = "SELECT * FROM \"" + table + "\" WHERE \"" + this.idConversion.toSQL(keyName) + "\" = $1";
         const values = [keyValue];
         return new Promise<any>(function (resolve, reject) {
@@ -171,7 +211,8 @@ export class PostgreSQLDriver implements DataSourceDriver {
      * @param projection List of fields to fetch from the table. Leave as null to fetch them all.
      * @param queryExtraOptions Additional query options
      */
-    find(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions): Promise<GenericRow[]> {
+    async find(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions): Promise<GenericRow[]> {
+        await this.ensureGeometryParsers();
         const sentenceAndValues = this.generateSelectSentence(table, filter, sortBy, sortDir, skip, limit, projection, queryExtraOptions);
         const sentence = sentenceAndValues.sql;
         const values = sentenceAndValues.values;
@@ -234,7 +275,8 @@ export class PostgreSQLDriver implements DataSourceDriver {
      * @param queryExtraOptions Additional query options
      * @param each Function to parse each row
      */
-    findStream(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions, each: (row: GenericRow) => Promise<void>): Promise<void> {
+    async findStream(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions, each: (row: GenericRow) => Promise<void>): Promise<void> {
+        await this.ensureGeometryParsers();
         const sentenceAndValues = this.generateSelectSentence(table, filter, sortBy, sortDir, skip, limit, projection, queryExtraOptions);
         const sentence = sentenceAndValues.sql;
         const values = sentenceAndValues.values;
@@ -291,7 +333,8 @@ export class PostgreSQLDriver implements DataSourceDriver {
      * @param queryExtraOptions Additional query options
      * @param each Function to parse each row
      */
-    findStreamSync(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions, each: (row: any) => void): Promise<void> {
+    async findStreamSync(table: string, filter: GenericFilter, sortBy: string, sortDir: SortDirection, skip: number, limit: number, projection: Set<string>, queryExtraOptions: QueryExtraOptions, each: (row: any) => void): Promise<void> {
+        await this.ensureGeometryParsers();
         const sentenceAndValues = this.generateSelectSentence(table, filter, sortBy, sortDir, skip, limit, projection, queryExtraOptions);
         const sentence = sentenceAndValues.sql;
         const values = sentenceAndValues.values;
@@ -347,7 +390,7 @@ export class PostgreSQLDriver implements DataSourceDriver {
         const keys = Object.keys(row);
         const sqlKeys = [];
         const values = [];
-        const qm = [];
+        const placeholders = [];
         let insertReturns = false;
 
         for (const k of keys) {
@@ -355,15 +398,16 @@ export class PostgreSQLDriver implements DataSourceDriver {
                 continue;
             }
             sqlKeys.push("\"" + this.idConversion.toSQL(k) + "\"");
-            values.push(toSQLCompatibleValue(row[k]));
-            qm.push("?");
+            const sqlVal = toSQLCompatibleValue(row[k]);
+            values.push(sqlVal.value);
+            placeholders.push(sqlVal.placeholder);
         }
 
         sentence += sqlKeys.join(",");
 
         sentence += ") VALUES (";
 
-        sentence += qm.join(",");
+        sentence += placeholders.join(",");
 
         sentence += ")";
 
@@ -424,8 +468,9 @@ export class PostgreSQLDriver implements DataSourceDriver {
                 sentence += ", ";
             }
 
-            sentence += "\"" + this.idConversion.toSQL(key) + "\" = ?";
-            values.push(toSQLCompatibleValue(updated[key]));
+            const sqlVal = toSQLCompatibleValue(updated[key]);
+            sentence += "\"" + this.idConversion.toSQL(key) + "\" = " + sqlVal.placeholder;
+            values.push(sqlVal.value);
         }
 
         sentence += " WHERE \"" + this.idConversion.toSQL(keyName) + "\" = ?";
@@ -468,18 +513,21 @@ export class PostgreSQLDriver implements DataSourceDriver {
 
             if (typeof updated[key] === "object" && updated[key] !== null) {
                 if (updated[key].update === "set") {
-                    sentence += "\"" + this.idConversion.toSQL(key) + "\" = ?";
-                    values.push(toSQLCompatibleValue(updated[key].value));
+                    const sqlVal = toSQLCompatibleValue(updated[key].value);
+                    sentence += "\"" + this.idConversion.toSQL(key) + "\" = " + sqlVal.placeholder;
+                    values.push(sqlVal.value);
                 } else if (updated[key].update === "inc") {
                     sentence += "\"" + this.idConversion.toSQL(key) + "\" = \"" + this.idConversion.toSQL(key) + "\" + ?";
-                    values.push(toSQLCompatibleValue(updated[key].value));
+                    values.push(toSQLCompatibleValue(updated[key].value).value);
                 } else {
-                    sentence += "\"" + this.idConversion.toSQL(key) + "\" = ?";
-                    values.push(toSQLCompatibleValue(updated[key]));
+                    const sqlVal = toSQLCompatibleValue(updated[key]);
+                    sentence += "\"" + this.idConversion.toSQL(key) + "\" = " + sqlVal.placeholder;
+                    values.push(sqlVal.value);
                 }
             } else {
-                sentence += "\"" + this.idConversion.toSQL(key) + "\" = ?";
-                values.push(toSQLCompatibleValue(updated[key]));
+                const sqlVal = toSQLCompatibleValue(updated[key]);
+                sentence += "\"" + this.idConversion.toSQL(key) + "\" = " + sqlVal.placeholder;
+                values.push(sqlVal.value);
             }
         }
 
