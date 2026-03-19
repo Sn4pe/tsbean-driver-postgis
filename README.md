@@ -1,114 +1,192 @@
-# TSBean-ORM PostgreSQL Driver
+# TSBean-ORM PostGIS Driver
 
-[![npm version](https://badge.fury.io/js/tsbean-driver-postgres.svg)](https://badge.fury.io/js/tsbean-driver-postgres)
+PostGIS driver for [tsbean-orm](https://github.com/AgustinSRG/tsbean-orm). Fork of [tsbean-driver-postgres](https://github.com/AgustinSRG/tsbean-driver-postgres) with automatic geometry handling.
 
-This a PostgreSQL driver for [tsbean-orm](https://github.com/AgustinSRG/tsbean-orm).
+Drop-in replacement that adds:
 
-Based on [pg](https://www.npmjs.com/package/pg) package.
+- **Reads**: automatic WKB/EWKB → GeoJSON conversion (built-in parser, zero dependencies)
+- **Writes**: automatic GeoJSON → `ST_GeomFromGeoJSON()` wrapping
+- **Filters**: spatial query support (`ST_Intersects`, `ST_Contains`, `ST_Within`, `ST_DWithin`)
 
 ## Installation
 
 ```
-npm install --save tsbean-driver-postgres
+npm install --save tsbean-driver-postgis
+```
+
+**Requirements**: PostgreSQL with the [PostGIS](https://postgis.net/) extension enabled.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
 ```
 
 ## Usage
 
 ```ts
-import { DataSourceDriver, DataSource } from "tsbean-orm";
-import { PostgreSQLDriver } from "tsbean-driver-postgres"
+import { DataSource } from "tsbean-orm";
+import { PostGISDriver } from "tsbean-driver-postgis";
 
-const mySource = PostgreSQLDriver.createDataSource({
-    host: "localhost",
-    port: 5432,
-    user: "postgres",
-    password: "postgres",
-    database: "my_database"
-});
-
-DataSource.set(DataSource.DEFAULT, mySource);
-```
-
-## Correspondence of identifiers
-
-This driver maps from [camel case](https://en.wikipedia.org/wiki/Camel_case) to [snake case](https://en.wikipedia.org/wiki/Snake_case). By default, we expect all the database table and column identifiers in snake case. Those identifiers will be converted to camel case before passing to tsbean, so you can work with camel case identifiers in your code.
-
-Here is an example:
-
-```sql
-CREATE TABLE "person" (
-    "id" BIGINT NOT NULL PRIMARY KEY,
-    "name" VARCHAR(255) NOT NULL,
-    "surname" VARCHAR(255) NOT NULL,
-    "age" INT,
-    "has_driver_license" BOOLEAN,
-    "preferences" TEXT,
-    "birth_date" TIMESTAMPTZ
-);
-```
-
-```ts
-const SOURCE = DataSource.DEFAULT;
-const TABLE = "person";
-const PRIMARY_KEY = "id";
-
-export class Person extends DataModel {
-
-    public static finder = new DataFinder<Person>(
-        SOURCE, // The data source
-        TABLE, // The table or collection name
-        PRIMARY_KEY, // The primary key. Leave blank if no primary key
-        (data: GenericRow) => {
-            return new Person(data);
-        },
-    );
-
-    public id: number;
-    public name: string;
-    public surname: string;
-    public age: number;
-    public hasDriverLicense: boolean;
-    public preferences: string[];
-    public birthDate: Date;
-
-    constructor(data: GenericRow) {
-        // First, we call DataModel constructor 
-        super(
-            SOURCE, // The data source
-            TABLE, // The table or collection name
-            PRIMARY_KEY // The primary key. Leave blank if no primary key
-        );
-
-        // Second, we set the class properties
-        // The recommended way is to set one by one to prevent prototype pollution
-        // You can also enforce the types if you do not trust the data source
-        // In that case you can use the enforceType utility function
-
-        this.id = enforceType(data.id, "int");
-        this.name = enforceType(data.name, "string");
-        this.surname = enforceType(data.surname, "string");
-        this.age = enforceType(data.age, "int");
-        this.hasDriverLicense = enforceType(data.hasDriverLicense, "boolean");
-        this.preferences = enforceType(data.preferences, "array");
-        this.birthDate = enforceType(data.birthDate, "date");
-
-        // Finally, we must call init()
-        this.init();
-    }
-}
-```
-
-If you want to disable this behaviour, and instead use identifiers as-it, you can use the `disableIdentifierConversion` option of the data source constructor:
-
-```ts
-const mySource = PostgreSQLDriver.createDataSource({
+const mySource = PostGISDriver.createDataSource({
     host: "localhost",
     port: 5432,
     user: "postgres",
     password: "postgres",
     database: "my_database",
-    disableIdentifierConversion: true
+});
+
+DataSource.set(DataSource.DEFAULT, mySource);
+```
+
+## Geometry columns
+
+Define geometry columns in your table using the PostGIS `GEOMETRY` type:
+
+```sql
+CREATE TABLE "locations" (
+    "id" VARCHAR NOT NULL PRIMARY KEY,
+    "name" VARCHAR(255) NOT NULL,
+    "geometry" GEOMETRY(Geometry, 4326)
+);
+
+CREATE INDEX "ix_locations_spatial" ON "locations" USING GIST ("geometry");
+```
+
+In your model, use the geometry field as a plain GeoJSON object. The driver handles all conversions transparently:
+
+```ts
+export class Location extends DataModel {
+
+    public static finder = new DataFinder<Location>(
+        DataSource.DEFAULT, "locations", "id",
+        (data) => new Location(data),
+    );
+
+    public id: string;
+    public name: string;
+    public geometry: any; // GeoJSON object
+
+    constructor(data: TypedRow<Location>) {
+        super(DataSource.DEFAULT, "locations", "id");
+
+        this.id = enforceType(data.id, "string");
+        this.name = enforceType(data.name, "string");
+        this.geometry = data.geometry || null; // Already parsed as GeoJSON by the driver
+
+        this.init();
+    }
+}
+```
+
+### Insert
+
+```ts
+const location = new Location({
+    id: "loc-1",
+    name: "Forest Plot A",
+    geometry: {
+        type: "Polygon",
+        coordinates: [[[-3.7, 40.4], [-3.6, 40.4], [-3.6, 40.5], [-3.7, 40.5], [-3.7, 40.4]]],
+    },
+});
+
+await location.insert();
+```
+
+The driver detects the GeoJSON object and generates:
+
+```sql
+INSERT INTO "locations" ("id", "name", "geometry")
+VALUES ($1, $2, ST_GeomFromGeoJSON($3)::geometry)
+```
+
+### Read
+
+```ts
+const location = await Location.finder.findByKey("loc-1");
+
+console.log(location.geometry);
+// { type: "Polygon", coordinates: [[[-3.7, 40.4], ...]] }
+```
+
+PostGIS returns geometry as WKB (binary). The driver automatically parses it to GeoJSON using a built-in EWKB parser — no external dependencies needed.
+
+### Update
+
+```ts
+location.geometry = { type: "Point", coordinates: [-3.7, 40.4] };
+await location.save();
+```
+
+## Supported geometry types
+
+| GeoJSON type | WKB type | 3D (Z) | SRID |
+|---|---|---|---|
+| Point | Point | Yes | Yes |
+| LineString | LineString | Yes | Yes |
+| Polygon | Polygon | Yes | Yes |
+| MultiPoint | MultiPoint | Yes | Yes |
+| MultiLineString | MultiLineString | Yes | Yes |
+| MultiPolygon | MultiPolygon | Yes | Yes |
+| GeometryCollection | GeometryCollection | Yes | Yes |
+
+## Spatial filters
+
+The driver extends tsbean-orm's filter system with PostGIS spatial operations. These can be used via `customQuery`:
+
+```ts
+const driver = DataSource.get(DataSource.DEFAULT).driver as any;
+
+// Find all locations within a bounding box
+const result = await driver.customQuery(
+    `SELECT * FROM "locations" WHERE ST_Intersects("geometry", ST_GeomFromGeoJSON($1)::geometry)`,
+    [JSON.stringify({ type: "Polygon", coordinates: [/* bounding box */] })],
+);
+```
+
+## Identifier conversion
+
+This driver inherits the identifier mapping from tsbean-driver-postgres. By default, it converts between [camelCase](https://en.wikipedia.org/wiki/Camel_case) (TypeScript) and [snake_case](https://en.wikipedia.org/wiki/Snake_case) (PostgreSQL).
+
+For example, `projectId` in your model maps to `project_id` in the database.
+
+To disable this:
+
+```ts
+const mySource = PostGISDriver.createDataSource({
+    host: "localhost",
+    port: 5432,
+    user: "postgres",
+    password: "postgres",
+    database: "my_database",
+    disableIdentifierConversion: true,
 });
 ```
 
-You can also set `customIdentifierConversion` to implement your own identifier conversion.
+You can also set `customIdentifierConversion` to implement your own mapping.
+
+## How it works
+
+```
+┌─────────────────────────┐
+│     Application         │
+│   (GeoJSON objects)     │
+└────────┬────────────────┘
+         │
+    ┌────▼────┐
+    │  Write  │  Detects GeoJSON → ST_GeomFromGeoJSON($N)::geometry
+    │  Read   │  Registers pg type parser → EWKB hex → GeoJSON
+    └────┬────┘
+         │
+┌────────▼────────────────┐
+│   PostgreSQL + PostGIS  │
+│   (WKB binary + GIST)   │
+└─────────────────────────┘
+```
+
+- **Writes**: `toSQLCompatibleValue()` checks if a value is a GeoJSON geometry object. If so, it serializes it as JSON and uses `ST_GeomFromGeoJSON(?)::geometry` as the SQL placeholder instead of `?`.
+- **Reads**: On first query, the driver looks up the OID of the `geometry` type in `pg_type` and registers a `pg.types.setTypeParser` that converts WKB hex to GeoJSON using a built-in EWKB parser.
+- **No external dependencies** for geometry handling — the EWKB parser is ~170 lines of pure `Buffer.read*` operations.
+
+## License
+
+MIT
