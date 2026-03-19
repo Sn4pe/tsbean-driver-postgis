@@ -112,7 +112,7 @@ function parseGeometryBody(state: ParseState): any {
     const byteOrder = readUInt8(state);
     const le = byteOrder === 1;
 
-    let rawType = readUInt32(state, le);
+    const rawType = readUInt32(state, le);
 
     // Detect EWKB flags
     let hasZ = (rawType & EWKB_FLAG_Z) !== 0;

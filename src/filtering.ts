@@ -156,7 +156,7 @@ export function filterToSQL(filter: GenericFilter | any, idConverter: (id: strin
         values.push(filter.value);
         break;
 
-    // --- PostGIS spatial filters ---
+        // --- PostGIS spatial filters ---
 
     case "st_intersects":
         query += "ST_Intersects(\"" + idConverter(filter.key) + "\", ST_GeomFromGeoJSON(?)::geometry)";

@@ -1,5 +1,11 @@
 # TSBean-ORM PostGIS Driver
 
+[![npm version](https://img.shields.io/npm/v/tsbean-driver-postgis.svg)](https://www.npmjs.com/package/tsbean-driver-postgis)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![tsbean-orm](https://img.shields.io/badge/tsbean--orm-3.x-blue.svg)](https://github.com/AgustinSRG/tsbean-orm)
+[![tsbean-driver-postgres](https://img.shields.io/badge/fork%20of-tsbean--driver--postgres-blue.svg)](https://github.com/AgustinSRG/tsbean-driver-postgres)
+[![PostGIS](https://img.shields.io/badge/PostGIS-3.x-blue.svg)](https://postgis.net/)
+
 PostGIS driver for [tsbean-orm](https://github.com/AgustinSRG/tsbean-orm). Fork of [tsbean-driver-postgres](https://github.com/AgustinSRG/tsbean-driver-postgres) with automatic geometry handling.
 
 Drop-in replacement that adds:
